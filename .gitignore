@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+runs/
+.dashboard/
+.pytest_cache/
+meta_patterns.json
+meta_patterns.history.jsonl
+meta_patterns.v*.json
+*.tmp

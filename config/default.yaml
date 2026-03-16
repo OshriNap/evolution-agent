@@ -1,0 +1,57 @@
+# Evolution Agent — Default Configuration
+
+# Population
+population_size: 20
+elite_count: 3
+max_generations: 100
+
+# Selection
+selection_strategy: tournament
+tournament_size: 3
+
+# Mutation
+mutation_types:
+  - point
+  - structural
+mutation_weights:
+  - 0.6
+  - 0.4
+crossover_rate: 0.2
+max_mutation_retries: 3
+
+# LLM — Mutator (local, cheap)
+mutator_model: "qwen2.5-coder:7b"
+ollama_base_url: "http://localhost:11434"
+
+# LLM — Analyzer (cloud or claude-code CLI)
+# Options: "claude-opus-4-6" (needs API key), "claude-code" (uses claude CLI), "claude-code:sonnet" etc.
+analyzer_model: "claude-code"
+analyzer_every_n_gens: 5
+# cloud_api_key: ""  # Set via EVOL_CLOUD_API_KEY env var
+# cloud_base_url: ""  # Set via EVOL_CLOUD_BASE_URL env var
+
+# LLM — Fallback (when Ollama unavailable)
+fallback_model: "claude-haiku-4-5-20251001"
+
+# Evaluation
+eval_timeout_s: 30.0
+direction: maximize
+
+# Termination
+# fitness_target: null  # Stop when this fitness is reached
+stagnation_limit: 20  # Stop after N gens without improvement
+
+# Meta-learning
+meta_optimizer_enabled: true
+meta_optimizer_type: "heuristic"  # "heuristic" | "optuna" | "none"
+# optuna_objective_mode: "composite"  # "improvement" | "composite" | "multi"
+# optuna_storage: ""  # Optuna storage URL (e.g. "sqlite:///optuna.db") for persistence
+# pattern_library_path: ""  # Defaults to run_dir/meta_patterns.json
+
+# Logging
+log_dir: "runs"
+dashboard_port: 8050
+
+# Concurrency
+max_concurrent_evals: 5
+max_concurrent_mutations: 5
