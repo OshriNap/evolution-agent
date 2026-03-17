@@ -73,6 +73,8 @@ class EvolutionLogger:
                 "mutation_type": individual.mutation_type.value if individual.mutation_type else None,
                 "error": individual.eval_result.error if individual.eval_result else None,
                 "eval_time_s": individual.eval_result.eval_time_s if individual.eval_result else None,
+                "code": individual.code,
+                "parent_ids": individual.parent_ids,
             },
         })
 
