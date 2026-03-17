@@ -8,7 +8,9 @@ Wraps a FunctionEvaluator. For each code variant:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import multiprocessing
 import time
 from typing import Any, Callable
 
@@ -22,6 +24,45 @@ from evolution_agent.evaluation.parameter_tuner import (
 from evolution_agent.evaluation.sandbox import CodeSandbox
 
 logger = logging.getLogger(__name__)
+
+
+def _eval_worker(fitness_fn, fn, result_queue):
+    """Worker for multiprocessing-based timeout."""
+    try:
+        result = fitness_fn(fn)
+        result_queue.put(("ok", result))
+    except Exception as e:
+        result_queue.put(("error", str(e)))
+
+
+async def _run_with_timeout(fitness_fn, fn, timeout_s):
+    """Run fitness_fn(fn) in a subprocess that can be killed on timeout."""
+    ctx = multiprocessing.get_context("fork")
+    q = ctx.Queue()
+    p = ctx.Process(target=_eval_worker, args=(fitness_fn, fn, q))
+    p.start()
+
+    loop = asyncio.get_event_loop()
+    deadline = time.monotonic() + timeout_s
+
+    while p.is_alive() and time.monotonic() < deadline:
+        await asyncio.sleep(0.1)
+
+    if p.is_alive():
+        p.kill()
+        p.join(timeout=2)
+        raise TimeoutError(f"Evaluation timed out after {timeout_s}s")
+
+    p.join(timeout=2)
+
+    if q.empty():
+        raise RuntimeError("Evaluation process died without returning results")
+
+    status, result = q.get_nowait()
+    q.close()
+    if status == "error":
+        raise RuntimeError(result)
+    return result
 
 
 class HybridEvaluator(BaseEvaluator):
@@ -81,9 +122,17 @@ class HybridEvaluator(BaseEvaluator):
                 eval_time_s=time.monotonic() - t0,
             )
 
-        # 2. Evaluate with defaults
+        # 2. Evaluate with defaults (with timeout via subprocess to avoid zombie threads)
         try:
-            default_fitness, default_metrics = self._fitness_fn(fn)
+            default_fitness, default_metrics = await _run_with_timeout(
+                self._fitness_fn, fn, self._timeout_s,
+            )
+        except TimeoutError:
+            return EvalResult(
+                fitness=self.worst_fitness(),
+                error=f"Default evaluation timed out after {self._timeout_s}s",
+                eval_time_s=time.monotonic() - t0,
+            )
         except Exception as e:
             return EvalResult(
                 fitness=self.worst_fitness(),

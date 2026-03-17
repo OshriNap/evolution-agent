@@ -69,7 +69,12 @@ class PopulationManager:
         return self._eval_cache.get(code_hash)
 
     def cache_result(self, code_hash: str, result: EvalResult) -> None:
-        """Cache an evaluation result by code hash."""
+        """Cache an evaluation result by code hash (bounded to 500 entries)."""
+        if len(self._eval_cache) >= 500:
+            # Remove oldest entries (first inserted)
+            to_remove = list(self._eval_cache.keys())[:100]
+            for k in to_remove:
+                del self._eval_cache[k]
         self._eval_cache[code_hash] = result
 
     def update_fitness(self, individual: Individual, result: EvalResult) -> None:
@@ -123,7 +128,8 @@ class PopulationManager:
         # Update hall of fame
         self._update_hall_of_fame()
 
-        # Create generation snapshot
+        # Create generation snapshot (individuals stored only for return value,
+        # _generations keeps lightweight copies without individuals to avoid OOM)
         gen = Generation(
             number=self._generation,
             individuals=list(self._population),
@@ -131,7 +137,16 @@ class PopulationManager:
             avg_fitness=self._compute_avg_fitness(),
             diversity=self.compute_diversity(),
         )
-        self._generations.append(gen)
+        # Store lightweight copy (no individuals) for history queries
+        gen_summary = Generation(
+            number=gen.number,
+            individuals=[],
+            best_fitness=gen.best_fitness,
+            avg_fitness=gen.avg_fitness,
+            diversity=gen.diversity,
+            timestamp=gen.timestamp,
+        )
+        self._generations.append(gen_summary)
 
         logger.info(
             "Gen %d: best=%.6f avg=%.6f diversity=%.4f pop=%d",
