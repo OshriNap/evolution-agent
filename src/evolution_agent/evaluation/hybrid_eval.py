@@ -258,6 +258,14 @@ class HybridEvaluator(BaseEvaluator):
         if not embedding or not isinstance(embedding, list):
             return result
 
+        # Ensure consistent embedding dimension (pad with 0s for failed instances)
+        if self._curiosity.buffer_size > 0:
+            expected_dim = self._curiosity._buffer[0].embedding
+            if len(embedding) < len(expected_dim):
+                embedding = embedding + [0.0] * (len(expected_dim) - len(embedding))
+            elif len(embedding) > len(expected_dim):
+                embedding = embedding[:len(expected_dim)]
+
         curiosity = self._curiosity.compute_curiosity(embedding)
         adjusted = self._curiosity.adjusted_fitness(
             result.fitness, embedding, self._direction.value,

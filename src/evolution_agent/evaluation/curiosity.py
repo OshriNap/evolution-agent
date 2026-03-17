@@ -163,17 +163,32 @@ class CuriosityModule:
         embedding: list[float],
         direction: str = "maximize",
     ) -> float:
-        """Compute fitness + curiosity bonus.
+        """Compute fitness + curiosity bonus, scaled relative to fitness range.
 
-        For maximize: fitness + weight * curiosity
-        For minimize: fitness - weight * curiosity
+        The curiosity bonus is scaled by the fitness range seen so far,
+        so it acts as a tiebreaker rather than dominating selection.
+
+        For maximize: fitness + weight * curiosity * fitness_range
+        For minimize: fitness - weight * curiosity * fitness_range
         """
         curiosity = self.compute_curiosity(embedding)
 
-        if direction == "maximize":
-            return fitness + self._weight * curiosity
+        # Scale curiosity by observed fitness range so it's a tiebreaker
+        if len(self._buffer) >= 2:
+            fitnesses = [e.fitness for e in self._buffer if e.fitness > float("-inf")]
+            if fitnesses:
+                f_range = max(fitnesses) - min(fitnesses)
+                # Use a fraction of the range to keep bonus proportional
+                bonus = self._weight * curiosity * max(f_range, 0.01)
+            else:
+                bonus = self._weight * curiosity * 0.01
         else:
-            return fitness - self._weight * curiosity
+            bonus = self._weight * curiosity * 0.01
+
+        if direction == "maximize":
+            return fitness + bonus
+        else:
+            return fitness - bonus
 
     def get_stats(self) -> dict[str, Any]:
         """Return buffer statistics."""
