@@ -289,6 +289,64 @@ class HybridEvaluator(BaseEvaluator):
 
         return result
 
+    def get_novelty_guidance(self) -> str:
+        """Generate guidance about explored vs unexplored behavioral space.
+
+        Returns a string for injection into mutation prompts, describing
+        what approaches have been tried and where novelty gaps exist.
+        """
+        if self._curiosity is None or self._curiosity.buffer_size < 3:
+            return ""
+
+        buffer = self._curiosity._buffer
+        n = len(buffer)
+
+        # Cluster by fitness tier
+        valid = [e for e in buffer if e.fitness > 0]
+        if not valid:
+            return ""
+
+        valid.sort(key=lambda e: e.fitness, reverse=True)
+        best = valid[0].fitness
+        tiers = {"top": [], "mid": [], "low": []}
+        for e in valid:
+            ratio = e.fitness / best if best > 0 else 0
+            if ratio > 0.95:
+                tiers["top"].append(e)
+            elif ratio > 0.7:
+                tiers["mid"].append(e)
+            else:
+                tiers["low"].append(e)
+
+        # Find which test instances are under-optimized
+        if valid[0].embedding:
+            dim = len(valid[0].embedding)
+            best_per_instance = [0.0] * dim
+            for e in valid:
+                for i, v in enumerate(e.embedding):
+                    best_per_instance[i] = max(best_per_instance[i], v)
+
+            weak_instances = [
+                i for i, v in enumerate(best_per_instance)
+                if v < sum(best_per_instance) / len(best_per_instance) * 0.95
+            ]
+        else:
+            weak_instances = []
+
+        lines = ["## Novelty landscape (from experience replay buffer)"]
+        lines.append(f"- {n} unique approaches evaluated so far")
+        lines.append(f"- Top tier (>95% of best): {len(tiers['top'])} approaches — this region is CROWDED, avoid similar solutions")
+        lines.append(f"- Mid tier (70-95%): {len(tiers['mid'])} approaches")
+        lines.append(f"- Low tier (<70%): {len(tiers['low'])} approaches")
+
+        if weak_instances:
+            lines.append(f"- Test instances {weak_instances} are under-optimized — a solution that performs well on THESE instances specifically would be highly novel")
+
+        lines.append("- Novel mutations that produce DIFFERENT per-instance performance patterns get a fitness bonus")
+        lines.append("- DO NOT produce another minor variant of the top approach — try a fundamentally different algorithm")
+
+        return "\n".join(lines)
+
     def get_function_spec(self) -> str:
         return self._function_spec
 

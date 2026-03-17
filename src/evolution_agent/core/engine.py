@@ -252,6 +252,12 @@ class EvolutionEngine:
             if failed:
                 guidance = (guidance + "\n\n## Previously failed approaches (avoid repeating):\n" + failed) if guidance else ""
 
+            # Add novelty landscape from curiosity buffer
+            if hasattr(self._evaluator, 'get_novelty_guidance'):
+                novelty_info = self._evaluator.get_novelty_guidance()
+                if novelty_info:
+                    guidance = (guidance + "\n\n" + novelty_info) if guidance else novelty_info
+
             # 3. Mutate
             mutator_llm = await self._router.get_mutator()
             offspring = await self._mutator.batch_mutate(
