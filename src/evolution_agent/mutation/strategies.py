@@ -35,8 +35,8 @@ def _parse_mutation_response(raw: str) -> tuple[str, str]:
     code = ""
     description = ""
 
-    # Extract description
-    desc_match = re.search(r"DESCRIPTION:\s*(.+)", raw)
+    # Extract description (handles optional markdown bold **DESCRIPTION:**)
+    desc_match = re.search(r"\*{0,2}DESCRIPTION:?\*{0,2}\s*(.+)", raw)
     if desc_match:
         description = desc_match.group(1).strip()
 
