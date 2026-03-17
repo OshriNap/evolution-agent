@@ -370,6 +370,18 @@ def tune_parameters(
     and picks fast coordinate descent for cheap evals (<10ms) or Optuna
     TPE for expensive ones. Explicit "tpe"/"cmaes"/"random" force Optuna.
     """
+    # GPU path: batch Sobol sweep + refinement
+    if sampler == "gpu":
+        try:
+            from evolution_agent.evaluation.gpu_tuner import tune_parameters_gpu
+            return tune_parameters_gpu(
+                code, compile_fn, fitness_fn, function_name,
+                direction=direction, param_specs=param_specs,
+            )
+        except ImportError:
+            logger.warning("GPU tuner unavailable, falling back to fast")
+            sampler = "fast"
+
     # Fast path: coordinate descent + golden section
     if sampler == "fast" or not OPTUNA_AVAILABLE:
         # Auto-detect: probe eval cost, use Optuna if expensive
