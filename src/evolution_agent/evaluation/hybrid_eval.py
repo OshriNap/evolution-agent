@@ -66,6 +66,8 @@ class HybridEvaluator(BaseEvaluator):
         self._tune_threshold = tune_threshold
 
         self._tuning_stats = {"tuned": 0, "skipped": 0, "no_params": 0, "improved": 0}
+        self._eval_count = 0
+        self._warmup_evals = tuning_trials  # skip tuning for first N evals
 
     async def evaluate(self, code: str) -> EvalResult:
         t0 = time.monotonic()
@@ -89,6 +91,8 @@ class HybridEvaluator(BaseEvaluator):
                 eval_time_s=time.monotonic() - t0,
             )
 
+        self._eval_count += 1
+
         # 3. Check if code has tunable params
         params = extract_params(code)
         if not params:
@@ -99,7 +103,15 @@ class HybridEvaluator(BaseEvaluator):
                 eval_time_s=time.monotonic() - t0,
             )
 
-        # 4. Check threshold — don't waste tuning on bad code
+        # 4. Skip tuning during warmup (initial population fill)
+        if self._eval_count <= self._warmup_evals:
+            return EvalResult(
+                fitness=default_fitness,
+                metrics={**default_metrics, "tuned": False, "n_params": len(params), "warmup": True},
+                eval_time_s=time.monotonic() - t0,
+            )
+
+        # 5. Check threshold — don't waste tuning on bad code
         if self._tune_threshold is not None:
             if self._direction == OptimizationDirection.MAXIMIZE:
                 if default_fitness < self._tune_threshold:

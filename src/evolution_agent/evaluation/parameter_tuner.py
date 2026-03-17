@@ -189,24 +189,23 @@ def tune_parameters(
         logger.debug("Default params evaluation failed: %s", e)
         return None
 
-    # Build code template that accepts params
-    # The function already uses `p` dict, so we inject params before calling
+    # Compile once and reuse — avoid exec() per trial (memory leak)
+    import functools
+    import inspect
+
+    compiled_fn = compile_fn(code, function_name)
+    if compiled_fn is None:
+        return None
+
+    sig = inspect.signature(compiled_fn)
+    fn_accepts_p = "p" in sig.parameters
+
     def _make_fn_with_params(trial_params: dict[str, float]):
         """Create a wrapper that injects params into the function call."""
-        fn = compile_fn(code, function_name)
-        if fn is None:
-            return None
-
-        import functools
-        import inspect
-
-        # Check if function accepts `p` argument
-        sig = inspect.signature(fn)
-        if "p" in sig.parameters:
-            return functools.partial(fn, p=trial_params)
+        if fn_accepts_p:
+            return functools.partial(compiled_fn, p=trial_params)
         else:
             # Function uses p internally with defaults, need to recompile
-            # with modified defaults
             modified_code = _inject_params(code, trial_params)
             return compile_fn(modified_code, function_name)
 
