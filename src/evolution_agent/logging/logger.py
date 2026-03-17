@@ -39,6 +39,18 @@ class EvolutionLogger:
             "type": "generation",
             "data": gen.to_dict(),
         })
+        # Log best individual's code each generation (population is pre-sorted)
+        if gen.individuals:
+            best = gen.individuals[0]
+            self._write({
+                "type": "best_code",
+                "data": {
+                    "generation": gen.number,
+                    "id": best.id,
+                    "fitness": best.fitness,
+                    "code": best.code,
+                },
+            })
         # Also write full population to separate file every 10 gens
         if self._gen_count % 10 == 0:
             pop_path = self._run_dir / f"population_gen{gen.number}.json"
