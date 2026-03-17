@@ -21,6 +21,7 @@ from evolution_agent.evaluation.parameter_tuner import (
     extract_params,
     tune_parameters,
 )
+from evolution_agent.evaluation.curiosity import BehaviorEntry, CuriosityModule
 from evolution_agent.evaluation.sandbox import CodeSandbox
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,9 @@ class HybridEvaluator(BaseEvaluator):
         tuning_sampler: str = "tpe",  # "tpe" (BO), "cmaes", "random"
         tuning_timeout_s: float = 30.0,
         tune_threshold: float | None = None,  # min fitness to trigger tuning
+        # Curiosity options
+        curiosity_weight: float = 0.0,  # 0 = disabled
+        embedding_key: str = "instance_ratios",  # metrics key for behavioral embedding
     ) -> None:
         self._fitness_fn = fitness_fn
         self._function_name = function_name
@@ -110,7 +114,20 @@ class HybridEvaluator(BaseEvaluator):
         self._eval_count = 0
         self._warmup_evals = tuning_trials  # skip tuning for first N evals
 
+        # Curiosity module
+        self._embedding_key = embedding_key
+        self._curiosity: CuriosityModule | None = None
+        if curiosity_weight > 0:
+            self._curiosity = CuriosityModule(
+                curiosity_weight=curiosity_weight,
+                use_gpu=True,
+            )
+
     async def evaluate(self, code: str) -> EvalResult:
+        result = await self._evaluate_inner(code)
+        return self._apply_curiosity(result, code)
+
+    async def _evaluate_inner(self, code: str) -> EvalResult:
         t0 = time.monotonic()
 
         # 1. Compile
@@ -232,6 +249,38 @@ class HybridEvaluator(BaseEvaluator):
             eval_time_s=time.monotonic() - t0,
         )
 
+    def _apply_curiosity(self, result: EvalResult, code: str) -> EvalResult:
+        """Add curiosity bonus to an eval result if curiosity is enabled."""
+        if self._curiosity is None or result.error:
+            return result
+
+        embedding = result.metrics.get(self._embedding_key, [])
+        if not embedding or not isinstance(embedding, list):
+            return result
+
+        curiosity = self._curiosity.compute_curiosity(embedding)
+        adjusted = self._curiosity.adjusted_fitness(
+            result.fitness, embedding, self._direction.value,
+        )
+
+        # Add to replay buffer
+        import hashlib
+        code_hash = hashlib.sha256(code.encode()).hexdigest()[:16]
+        self._curiosity.add(BehaviorEntry(
+            code_hash=code_hash,
+            embedding=embedding,
+            fitness=result.fitness,
+            generation=self._eval_count,
+        ))
+
+        # Update metrics
+        result.metrics["curiosity"] = round(curiosity, 4)
+        result.metrics["raw_fitness"] = result.fitness
+        result.metrics["adjusted_fitness"] = round(adjusted, 4)
+        result.fitness = adjusted
+
+        return result
+
     def get_function_spec(self) -> str:
         return self._function_spec
 
@@ -239,4 +288,7 @@ class HybridEvaluator(BaseEvaluator):
         return self._direction
 
     def get_tuning_stats(self) -> dict[str, int]:
-        return dict(self._tuning_stats)
+        stats = dict(self._tuning_stats)
+        if self._curiosity:
+            stats["curiosity"] = self._curiosity.get_stats()
+        return stats

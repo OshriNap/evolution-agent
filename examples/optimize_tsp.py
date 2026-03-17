@@ -175,6 +175,7 @@ def evaluate_tsp(solve_fn) -> tuple[float, dict[str, float]]:
         "worst_ratio": round(min(ratios), 4),
         "valid": len(ratios),
         "errors": errors,
+        "instance_ratios": ratios,  # behavioral embedding for curiosity
     }
 
 
@@ -200,6 +201,8 @@ async def main() -> None:
     sampler = os.environ.get("EVOL_SAMPLER", "fast")  # fast (coord descent), tpe (BO), cmaes, random
     tuning_trials = int(os.environ.get("EVOL_TUNING_TRIALS", "15"))
 
+    curiosity_weight = float(os.environ.get("EVOL_CURIOSITY", "0.0"))
+
     if use_hybrid:
         evaluator = HybridEvaluator(
             fitness_fn=evaluate_tsp,
@@ -211,8 +214,12 @@ async def main() -> None:
             tuning_sampler=sampler,
             tuning_timeout_s=15.0,
             tune_threshold=0.5,  # don't tune obviously broken code
+            curiosity_weight=curiosity_weight,
         )
-        print(f"Hybrid mode: LLM structure + {sampler.upper()} parameter tuning ({tuning_trials} trials)")
+        mode = f"Hybrid mode: LLM structure + {sampler.upper()} parameter tuning ({tuning_trials} trials)"
+        if curiosity_weight > 0:
+            mode += f" + curiosity (λ={curiosity_weight})"
+        print(mode)
     else:
         evaluator = FunctionEvaluator(
             fitness_fn=evaluate_tsp,
