@@ -197,7 +197,7 @@ async def main() -> None:
     )
 
     use_hybrid = os.environ.get("EVOL_HYBRID", "1") == "1"
-    sampler = os.environ.get("EVOL_SAMPLER", "tpe")  # tpe (BO), cmaes, random
+    sampler = os.environ.get("EVOL_SAMPLER", "fast")  # fast (coord descent), tpe (BO), cmaes, random
     tuning_trials = int(os.environ.get("EVOL_TUNING_TRIALS", "15"))
 
     if use_hybrid:
