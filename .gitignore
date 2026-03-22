@@ -12,3 +12,4 @@ meta_patterns.json
 meta_patterns.history.jsonl
 meta_patterns.v*.json
 *.tmp
+bin/blis
