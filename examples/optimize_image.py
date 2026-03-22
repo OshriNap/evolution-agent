@@ -168,3 +168,65 @@ def render(x, y, w, h, p=None):
 """
 
 SEEDS = [SEED_FLAT, SEED_GRADIENT, SEED_SINCOS]
+
+
+def render_to_ppm(fn, path, p=None):
+    """Render an image function to PPM format (no dependencies)."""
+    pixels = bytearray()
+    for y in range(H):
+        for x in range(W):
+            try:
+                if p is not None:
+                    r, g, b = fn(x, y, W, H, p)
+                else:
+                    r, g, b = fn(x, y, W, H)
+            except Exception:
+                r, g, b = 0, 0, 0
+            pixels.extend([
+                max(0, min(255, int(r))),
+                max(0, min(255, int(g))),
+                max(0, min(255, int(b))),
+            ])
+
+    with open(path, "wb") as f:
+        f.write(f"P6\n{W} {H}\n255\n".encode())
+        f.write(bytes(pixels))
+
+
+def render_to_png(fn, path, p=None):
+    """Render an image function to PNG format (stdlib only)."""
+    raw_rows = []
+    for y in range(H):
+        row = bytearray([0])  # filter byte: None
+        for x in range(W):
+            try:
+                if p is not None:
+                    r, g, b = fn(x, y, W, H, p)
+                else:
+                    r, g, b = fn(x, y, W, H)
+            except Exception:
+                r, g, b = 0, 0, 0
+            row.extend([
+                max(0, min(255, int(r))),
+                max(0, min(255, int(g))),
+                max(0, min(255, int(b))),
+            ])
+        raw_rows.append(bytes(row))
+
+    raw_data = b"".join(raw_rows)
+
+    def _png_chunk(chunk_type, data):
+        chunk = chunk_type + data
+        return (struct.pack(">I", len(data)) + chunk +
+                struct.pack(">I", zlib.crc32(chunk) & 0xFFFFFFFF))
+
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")  # signature
+        # IHDR
+        ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
+        f.write(_png_chunk(b"IHDR", ihdr))
+        # IDAT
+        compressed = zlib.compress(raw_data)
+        f.write(_png_chunk(b"IDAT", compressed))
+        # IEND
+        f.write(_png_chunk(b"IEND", b""))
