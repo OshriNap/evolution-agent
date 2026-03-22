@@ -5,13 +5,17 @@ pixels and compared against a 64x64 target image. Fitness rewards pixel
 similarity and penalizes shape count (fewer shapes = more elegant).
 
 Usage:
-    python examples/optimize_image.py
-    EVOL_POPULATION_SIZE=12 EVOL_MAX_GENERATIONS=30 python examples/optimize_image.py
+    python examples/optimize_image.py                          # default target (glow)
+    EVOL_TARGET=face python examples/optimize_image.py         # smiley face target
+    EVOL_TARGET=blocks python examples/optimize_image.py       # color blocks target
+    EVOL_TARGET=sunset python examples/optimize_image.py       # sunset target
+    EVOL_TARGET=rings python examples/optimize_image.py        # concentric rings target
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib
 import io
 import os
 import sys
@@ -23,10 +27,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import cairosvg
 from PIL import Image
 
-from examples.target_image import TARGET, W, H
+# Load target based on EVOL_TARGET env var (default: glow)
+_target_name = os.environ.get("EVOL_TARGET", "glow")
+_target_module = importlib.import_module(f"examples.target_{_target_name}")
+TARGET = _target_module.TARGET
+W = _target_module.W
+H = _target_module.H
+TARGET_DESC = getattr(_target_module, "DESCRIPTION", "")
 
-# Precompute target as flat pixel list for fast comparison
-TARGET_PIXELS = TARGET  # list of (r, g, b) tuples, len = W * H
+TARGET_PIXELS = TARGET
 
 # Error threshold: pixel within this squared-error is "ok"
 ERROR_THRESHOLD = 50 * 50 * 3  # ~50 per channel
@@ -151,7 +160,7 @@ def evaluate_svg(fn) -> tuple[float, dict]:
     return fitness, metrics
 
 
-FUNCTION_SPEC = """\
+FUNCTION_SPEC = f"""\
 def generate_svg(w, h, p=None):
     # Generate an SVG image as a string that matches the target.
     #
@@ -159,7 +168,7 @@ def generate_svg(w, h, p=None):
     #     w, h: image dimensions (64x64)
     #     p: optional dict of tunable numeric parameters with defaults.
     #        Put all tunable constants in p so they can be auto-optimized.
-    #        Example: if p is None: p = {"cx": 32.0, "r": 20.0}
+    #        Example: if p is None: p = {{"cx": 32.0, "r": 20.0}}
     #
     # Returns:
     #     A string containing valid SVG markup.
@@ -169,33 +178,12 @@ def generate_svg(w, h, p=None):
     #     math (math.sin, math.cos, math.sqrt, math.exp, math.pi, etc.)
     #     range, len, min, max, int, float, abs, sum, sorted, round, pow, str
     #
-    # === TARGET IMAGE DESCRIPTION ===
-    # The target is a 64x64 image of a bright radial glow on a dark background.
-    # Structure: a bright yellow-white circle at the center that fades out
-    # radially toward dark blue/purple edges. Roughly radially symmetric.
-    #
-    # Key features:
-    #   - Center (dist < 0.3 from center): bright, avg (148, 121, 159)
-    #   - Edges (dist > 0.7 from center): dark, avg (67, 33, 132)
-    #   - The falloff from center to edge is nonlinear (quadratic-ish)
-    #   - Background has a subtle vertical gradient:
-    #       top is more blue (B~159), bottom is more red/less blue (B~111)
-    #   - Background has a subtle horizontal gradient:
-    #       left is darker green (G~41), right is brighter green (G~57)
-    #
-    # Per-quadrant average colors:
-    #   Top-Left:     (67, 41, 159)  — dark, blue-heavy
-    #   Top-Right:    (69, 57, 159)  — dark, blue-heavy, slightly greener
-    #   Bottom-Left:  (98, 43, 111)  — warmer, less blue
-    #   Bottom-Right: (99, 59, 112)  — warmer, less blue, slightly greener
-    #
-    # Channel ranges: R=[40-255], G=[20-240], B=[81-200]
-    # Overall average: (83, 50, 135)
+{TARGET_DESC}
     #
     # SVG tips:
-    #   - Use <radialGradient> for the center glow effect
-    #   - Use <linearGradient> for background color shifts
-    #   - Use <circle>, <ellipse> for the radial shape
+    #   - Use <radialGradient> for glow/circular effects
+    #   - Use <linearGradient> for color transitions
+    #   - Use <circle>, <rect>, <ellipse>, <path> for shapes
     #   - Use opacity and layering to blend shapes
     #   - Use <defs> for gradient definitions
     #   - Fewer shapes with gradients is better than many solid shapes
