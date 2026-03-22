@@ -693,16 +693,151 @@ def sweep(target_name: str, n_steps: int = 100, bo_trials: int = 30,
     return experiences
 
 
+ALL_TARGETS = ["glow", "blocks", "face", "sunset", "rings"]
+
+
+def _genome_from_dict(d: dict) -> Genome:
+    """Reconstruct a Genome from its dict representation."""
+    g = Genome(bg_r=d["bg"][0], bg_g=d["bg"][1], bg_b=d["bg"][2],
+               bg_fixed=d.get("bg_fixed", False))
+    for sd in d["shapes"]:
+        g.shapes.append(Shape(
+            type=sd["type"],
+            params=sd["params"],
+            fixed=sd.get("fixed", {k: False for k in sd["params"]}),
+        ))
+    return g
+
+
+def hindsight_relabel(experiences: list[dict], original_target: str,
+                      use_gpu: bool = False) -> list[dict]:
+    """Relabel experiences against all other targets (HER).
+
+    For each experience from the original sweep, evaluate the before/after
+    genomes against every other target. If the action improved fitness for
+    a different target, store it as a positive experience for that target.
+
+    Returns the list of new hindsight experiences.
+    """
+    other_targets = [t for t in ALL_TARGETS if t != original_target]
+    if not other_targets:
+        return []
+
+    # Load all other targets
+    target_data = {}
+    for t in other_targets:
+        pixels, w, h = load_target(t)
+        target_data[t] = (pixels, w, h)
+
+    # Initialize GPU rasterizers for each target
+    gpu_rasts = {}
+    target_gpus = {}
+    if use_gpu:
+        from gpu_rasterizer import GPURasterizer
+        for t in other_targets:
+            _, w, h = target_data[t]
+            rast = GPURasterizer(w, h, "cuda")
+            gpu_rasts[t] = rast
+            target_gpus[t] = rast.target_from_pixels(target_data[t][0])
+
+    hindsight_experiences = []
+    evaluated = 0
+
+    for exp in experiences:
+        genome_before = _genome_from_dict(exp["o_t"]["genome"])
+        genome_after = _genome_from_dict(exp["o_t1"]["genome"])
+
+        for t in other_targets:
+            pixels, w, h = target_data[t]
+            gr = gpu_rasts.get(t)
+            tg = target_gpus.get(t)
+
+            fit_before, sim_before, mse_before, reg_before = _eval_genome(
+                genome_before, pixels, w, h, gr, tg)
+            fit_after, sim_after, mse_after, reg_after = _eval_genome(
+                genome_after, pixels, w, h, gr, tg)
+            evaluated += 2
+
+            reward = fit_after - fit_before
+
+            hindsight_exp = {
+                "o_t": {
+                    "fitness": fit_before, "similarity": sim_before,
+                    "mse": mse_before, "region_errors": reg_before,
+                    "shape_count": genome_before.shape_count(),
+                    "genome": exp["o_t"]["genome"],
+                },
+                "action": exp["action"],
+                "o_t1": {
+                    "fitness": fit_after, "similarity": sim_after,
+                    "mse": mse_after, "region_errors": reg_after,
+                    "shape_count": genome_after.shape_count(),
+                    "genome": exp["o_t1"]["genome"],
+                },
+                "reward": reward,
+                "target": t,
+                "step": exp["step"],
+                "bo_trials": 0,  # no BO, just re-evaluation
+                "timestamp": time.time(),
+                "hindsight": True,
+                "original_target": original_target,
+            }
+            hindsight_experiences.append(hindsight_exp)
+
+    positive = sum(1 for e in hindsight_experiences if e["reward"] > 0)
+    print(f"[hindsight] {original_target} -> {other_targets}: "
+          f"{len(hindsight_experiences)} relabeled, {positive} positive "
+          f"({evaluated} evals)", flush=True)
+
+    return hindsight_experiences
+
+
 if __name__ == "__main__":
     target_arg = os.environ.get("EVOL_TARGET", "glow")
     n_steps = int(os.environ.get("BO_STEPS", "200"))
     bo_trials = int(os.environ.get("BO_TRIALS", "30"))
     use_gpu = os.environ.get("BO_GPU", "0") == "1"
+    do_hindsight = os.environ.get("BO_HINDSIGHT", "1") == "1"
 
     if target_arg == "all":
-        targets = ["glow", "blocks", "face", "sunset", "rings"]
+        targets = ALL_TARGETS
     else:
         targets = [target_arg]
 
+    all_experiences = {}
     for t in targets:
-        sweep(t, n_steps=n_steps, bo_trials=bo_trials, use_gpu=use_gpu)
+        exps = sweep(t, n_steps=n_steps, bo_trials=bo_trials, use_gpu=use_gpu)
+        all_experiences[t] = exps
+
+    # Hindsight relabeling pass
+    if do_hindsight and len(targets) > 1:
+        print("\n=== Hindsight Experience Replay ===", flush=True)
+        for t, exps in all_experiences.items():
+            hindsight = hindsight_relabel(exps, t, use_gpu=use_gpu)
+            if hindsight:
+                # Save hindsight experiences alongside originals
+                # Find the run dir from the sweep
+                run_dirs = sorted(Path("runs").glob(f"bo_sweep_{t}*"),
+                                  key=lambda p: p.stat().st_mtime, reverse=True)
+                if run_dirs:
+                    hindsight_path = run_dirs[0] / "hindsight.jsonl"
+                    with open(hindsight_path, "w") as f:
+                        for h in hindsight:
+                            f.write(json.dumps(h) + "\n")
+                    print(f"[{t}] Saved {len(hindsight)} hindsight experiences to "
+                          f"{hindsight_path}", flush=True)
+
+        # Summary
+        total_original = sum(len(e) for e in all_experiences.values())
+        total_hindsight = 0
+        for t in targets:
+            run_dirs = sorted(Path("runs").glob(f"bo_sweep_{t}*"),
+                              key=lambda p: p.stat().st_mtime, reverse=True)
+            if run_dirs:
+                hp = run_dirs[0] / "hindsight.jsonl"
+                if hp.exists():
+                    with open(hp) as f:
+                        total_hindsight += sum(1 for _ in f)
+
+        print(f"\n=== Total: {total_original} original + {total_hindsight} hindsight "
+              f"= {total_original + total_hindsight} experiences ===", flush=True)
