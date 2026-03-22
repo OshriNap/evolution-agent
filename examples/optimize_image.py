@@ -230,3 +230,106 @@ def render_to_png(fn, path, p=None):
         f.write(_png_chunk(b"IDAT", compressed))
         # IEND
         f.write(_png_chunk(b"IEND", b""))
+
+
+async def main() -> None:
+    from evolution_agent.core.config import load_config
+    from evolution_agent.core.engine import EvolutionEngine
+    from evolution_agent.core.types import OptimizationDirection
+    from evolution_agent.evaluation.function_eval import FunctionEvaluator
+    from evolution_agent.evaluation.hybrid_eval import HybridEvaluator
+
+    config = load_config(
+        str(Path(__file__).parent.parent / "config" / "default.yaml"),
+        overrides={
+            "population_size": int(os.environ.get("EVOL_POPULATION_SIZE", "12")),
+            "max_generations": int(os.environ.get("EVOL_MAX_GENERATIONS", "30")),
+            "elite_count": 2,
+            "analyzer_every_n_gens": int(os.environ.get("EVOL_ANALYZER_EVERY", "5")),
+            "analyzer_model": os.environ.get("EVOL_ANALYZER_MODEL", "claude-code:sonnet"),
+            "stagnation_limit": 15,
+            "ollama_base_url": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            "meta_optimizer_type": os.environ.get("EVOL_META_OPTIMIZER_TYPE", "heuristic"),
+            "max_concurrent_mutations": 1,
+            "max_concurrent_evals": 1,
+            "eval_timeout_s": 10.0,
+        },
+    )
+
+    use_hybrid = os.environ.get("EVOL_HYBRID", "1") == "1"
+    sampler = os.environ.get("EVOL_SAMPLER", "fast")
+    tuning_trials = int(os.environ.get("EVOL_TUNING_TRIALS", "15"))
+    curiosity_weight = float(os.environ.get("EVOL_CURIOSITY", "0.0"))
+
+    if use_hybrid:
+        evaluator = HybridEvaluator(
+            fitness_fn=evaluate_renderer,
+            function_name="render",
+            function_spec=FUNCTION_SPEC,
+            direction=OptimizationDirection.MAXIMIZE,
+            timeout_s=10.0,
+            tuning_trials=tuning_trials,
+            tuning_sampler=sampler,
+            tuning_timeout_s=15.0,
+            tune_threshold=0.1,
+            curiosity_weight=curiosity_weight,
+            embedding_key="region_errors",
+        )
+        mode = f"Hybrid mode: LLM structure + {sampler.upper()} parameter tuning ({tuning_trials} trials)"
+        if curiosity_weight > 0:
+            mode += f" + curiosity (lambda={curiosity_weight})"
+        print(mode)
+    else:
+        evaluator = FunctionEvaluator(
+            fitness_fn=evaluate_renderer,
+            function_name="render",
+            function_spec=FUNCTION_SPEC,
+            direction=OptimizationDirection.MAXIMIZE,
+            timeout_s=10.0,
+        )
+        print("LLM-only mode (no parameter tuning)")
+
+    engine = EvolutionEngine(
+        config=config,
+        evaluator=evaluator,
+        seeds=SEEDS,
+    )
+
+    # Capture run_dir before running (engine exposes it as _run_dir)
+    run_dir = str(engine._run_dir)
+
+    summary = await engine.run()
+
+    print("\n" + "=" * 60)
+    print("IMAGE EVOLUTION COMPLETE")
+    print("=" * 60)
+    print(f"Generations: {summary['total_generations']}")
+    print(f"Best fitness: {summary['best_fitness']:.6f}")
+    print(f"  (1.0 = perfect match, higher = closer to target)")
+    print(f"Elapsed: {summary['elapsed_s']:.1f}s")
+
+    # Render best result
+    best_code = summary.get("best_code", "")
+    if best_code:
+        from evolution_agent.evaluation.sandbox import CodeSandbox
+        sandbox = CodeSandbox()
+        best_fn = sandbox.compile_function(best_code, "render")
+        if best_fn:
+            out_path = os.path.join(run_dir, "best_render.png")
+            render_to_png(best_fn, out_path)
+            print(f"\nBest render saved to: {out_path}")
+
+            # Also save target for comparison
+            target_path = os.path.join(run_dir, "target.png")
+            def target_fn(x, y, w, h, p=None):
+                return TARGET[y * w + x]
+            render_to_png(target_fn, target_path)
+            print(f"Target saved to: {target_path}")
+
+    print("\nBest renderer code:")
+    print("-" * 40)
+    print(best_code)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
