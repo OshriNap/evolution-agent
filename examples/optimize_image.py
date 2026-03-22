@@ -115,6 +115,35 @@ def render(x, y, w, h, p=None):
     #     math (math.sin, math.cos, math.sqrt, math.exp, math.pi, etc.)
     #     range, len, min, max, int, float, abs, sum, sorted, round, pow
     #
+    # === TARGET IMAGE DESCRIPTION ===
+    # The target is a 64x64 image of a bright radial glow on a dark background.
+    # Structure: a bright yellow-white circle at the center that fades out
+    # radially toward dark blue/purple edges. Roughly radially symmetric.
+    #
+    # Key features:
+    #   - Center (dist < 0.3 from center): bright, avg (148, 121, 159)
+    #   - Edges (dist > 0.7 from center): dark, avg (67, 33, 132)
+    #   - The falloff from center to edge is nonlinear (quadratic-ish)
+    #   - Background has a subtle vertical gradient:
+    #       top is more blue (B~159), bottom is more red/less blue (B~111)
+    #   - Background has a subtle horizontal gradient:
+    #       left is darker green (G~41), right is brighter green (G~57)
+    #
+    # Per-quadrant average colors:
+    #   Top-Left:     (67, 41, 159)  — dark, blue-heavy
+    #   Top-Right:    (69, 57, 159)  — dark, blue-heavy, slightly greener
+    #   Bottom-Left:  (98, 43, 111)  — warmer, less blue
+    #   Bottom-Right: (99, 59, 112)  — warmer, less blue, slightly greener
+    #
+    # Channel ranges: R=[40-255], G=[20-240], B=[81-200]
+    # Overall average: (83, 50, 135)
+    #
+    # Strategy hints:
+    #   - Use distance from center (0.5, 0.5) for the radial glow
+    #   - Blend between bright center color and dark edge color based on distance
+    #   - Add nx/ny-dependent terms for the background gradient
+    #   - The center glow dominates; background gradient is secondary
+    #
     # Tips:
     #     - Normalize coords: nx, ny = x / w, y / h  (gives 0..1 range)
     #     - Use math.sin/cos for periodic patterns
