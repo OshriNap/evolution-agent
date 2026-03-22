@@ -483,54 +483,78 @@ ACTION_WEIGHTS = [0.25, 0.10, 0.10, 0.08, 0.12, 0.17, 0.18]
 
 # ── BO optimization ───────────────────────────────────────────────
 
-def optimize_params(genome: Genome, target: list, w: int, h: int,
-                    n_trials: int = 30) -> tuple[Genome, float, list[dict]]:
-    """Run Optuna on released parameters. Returns optimized genome + fitness + trial log."""
-    g = genome.clone()
+def _apply_trial_params(g: Genome, tunable: list, trial_or_params: dict, source: str = "trial"):
+    """Apply parameter values to genome. Works with both Optuna trials and dicts."""
+    for key, pname, lo, hi in tunable:
+        param_key = f"{key}_{pname}"
+        if source == "trial":
+            if isinstance(lo, int):
+                val = float(trial_or_params.suggest_int(param_key, lo, hi))
+            else:
+                val = trial_or_params.suggest_float(param_key, lo, hi)
+        else:
+            val = trial_or_params.get(param_key, None)
+            if val is None:
+                continue
+        if key == "bg":
+            if pname == "r": g.bg_r = val
+            elif pname == "g": g.bg_g = val
+            elif pname == "b": g.bg_b = val
+        else:
+            si = int(key[1:])
+            g.shapes[si].params[pname] = float(val)
 
-    # Collect tunable parameters
+
+def _collect_tunable(genome: Genome) -> list:
+    """Collect all tunable (non-fixed) parameters from a genome."""
     tunable = []
-    if not g.bg_fixed:
+    if not genome.bg_fixed:
         tunable.append(("bg", "r", 0, 255))
         tunable.append(("bg", "g", 0, 255))
         tunable.append(("bg", "b", 0, 255))
-    for si, s in enumerate(g.shapes):
+    for si, s in enumerate(genome.shapes):
         param_defs = SHAPE_PARAM_DEFS[s.type]
         for pname, is_fixed in s.fixed.items():
             if not is_fixed and pname in param_defs:
                 lo, hi = param_defs[pname]
                 tunable.append((f"s{si}", pname, lo, hi))
+    return tunable
 
-    if not tunable:
+
+def _eval_genome(g: Genome, target, w, h, gpu_rast=None, target_gpu=None):
+    """Evaluate a genome using GPU or CPU."""
+    if gpu_rast is not None and target_gpu is not None:
+        canvas = gpu_rast.render(g)
+        fit, sim, regions = gpu_rast.fitness(canvas, target_gpu, g.shape_count())
+        # Approximate MSE from similarity for logging
+        mse = (1.0 / sim - 1.0) / 1000.0 * 3 * 255 * 255 if sim > 0 else 255**2
+        return fit, sim, mse, regions
+    else:
         svg = g.to_svg(w, h)
         pixels = svg_to_pixels(svg, w, h)
         if pixels is None:
-            return g, 0.0, []
-        fitness, _, _, _ = compute_fitness(pixels, target, w, h, g.shape_count())
-        return g, fitness, []
+            return 0.0, 0.0, 255**2, [1.0]*4
+        return compute_fitness(pixels, target, w, h, g.shape_count())
+
+
+def optimize_params(genome: Genome, target, w: int, h: int,
+                    n_trials: int = 30, gpu_rast=None,
+                    target_gpu=None) -> tuple[Genome, float, list[dict]]:
+    """Run Optuna on released parameters. Uses GPU if available."""
+    g = genome.clone()
+    tunable = _collect_tunable(g)
+
+    if not tunable:
+        fit, _, _, _ = _eval_genome(g, target, w, h, gpu_rast, target_gpu)
+        return g, fit, []
 
     trial_log = []
 
     def objective(trial):
-        for key, pname, lo, hi in tunable:
-            if isinstance(lo, int):
-                val = float(trial.suggest_int(f"{key}_{pname}", lo, hi))
-            else:
-                val = trial.suggest_float(f"{key}_{pname}", lo, hi)
-            if key == "bg":
-                if pname == "r": g.bg_r = val
-                elif pname == "g": g.bg_g = val
-                elif pname == "b": g.bg_b = val
-            else:
-                si = int(key[1:])
-                g.shapes[si].params[pname] = val
-
-        svg = g.to_svg(w, h)
-        pixels = svg_to_pixels(svg, w, h)
-        if pixels is None:
-            return 0.0
-        fitness, sim, mse, regions = compute_fitness(pixels, target, w, h, g.shape_count())
-        trial_log.append({"trial": trial.number, "fitness": fitness, "similarity": sim, "mse": mse})
+        _apply_trial_params(g, tunable, trial, source="trial")
+        fitness, sim, mse, _ = _eval_genome(g, target, w, h, gpu_rast, target_gpu)
+        trial_log.append({"trial": trial.number, "fitness": fitness,
+                         "similarity": sim, "mse": mse})
         return fitness
 
     study = optuna.create_study(direction="maximize",
@@ -538,17 +562,7 @@ def optimize_params(genome: Genome, target: list, w: int, h: int,
     study.optimize(objective, n_trials=n_trials, timeout=60)
 
     # Apply best params
-    for key, pname, lo, hi in tunable:
-        param_key = f"{key}_{pname}"
-        if param_key in study.best_params:
-            val = study.best_params[param_key]
-            if key == "bg":
-                if pname == "r": g.bg_r = val
-                elif pname == "g": g.bg_g = val
-                elif pname == "b": g.bg_b = val
-            else:
-                si = int(key[1:])
-                g.shapes[si].params[pname] = float(val)
+    _apply_trial_params(g, tunable, study.best_params, source="dict")
 
     return g, study.best_value, trial_log
 
@@ -562,29 +576,33 @@ def load_target(name: str):
 
 
 def sweep(target_name: str, n_steps: int = 100, bo_trials: int = 30,
-          out_dir: str | None = None):
+          out_dir: str | None = None, use_gpu: bool = False):
     """Run BO sweep on a target. Returns experience log."""
     target, w, h = load_target(target_name)
 
+    # Initialize GPU rasterizer if requested
+    gpu_rast = None
+    target_gpu = None
+    if use_gpu:
+        from gpu_rasterizer import GPURasterizer
+        gpu_rast = GPURasterizer(w, h, "cuda")
+        target_gpu = gpu_rast.target_from_pixels(target)
+
     if out_dir is None:
-        out_dir = f"runs/bo_sweep_{target_name}_{int(time.time())}"
+        gpu_tag = "_gpu" if use_gpu else ""
+        out_dir = f"runs/bo_sweep_{target_name}{gpu_tag}_{int(time.time())}"
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     log_path = Path(out_dir) / "experiences.jsonl"
 
     genome = Genome(bg_r=128, bg_g=128, bg_b=128)
-
-    svg = genome.to_svg(w, h)
-    pixels = svg_to_pixels(svg, w, h)
-    if pixels:
-        fitness, sim, mse, regions = compute_fitness(pixels, target, w, h, 0)
-    else:
-        fitness, sim, mse, regions = 0.0, 0.0, 255**2, [1.0]*4
+    fitness, sim, mse, regions = _eval_genome(genome, target, w, h, gpu_rast, target_gpu)
 
     best_fitness = fitness
     best_genome = genome.clone()
     experiences = []
 
-    print(f"[{target_name}] Starting sweep: {n_steps} steps, {bo_trials} BO trials each",
+    mode = "GPU" if use_gpu else "CPU"
+    print(f"[{target_name}] Starting sweep ({mode}): {n_steps} steps, {bo_trials} BO trials each",
           flush=True)
     print(f"[{target_name}] Initial fitness: {fitness:.4f}", flush=True)
 
@@ -603,16 +621,12 @@ def sweep(target_name: str, n_steps: int = 100, bo_trials: int = 30,
 
         new_genome, new_fitness, trial_log = optimize_params(
             new_genome, target, w, h, n_trials=bo_trials,
+            gpu_rast=gpu_rast, target_gpu=target_gpu,
         )
 
-        new_svg = new_genome.to_svg(w, h)
-        new_pixels = svg_to_pixels(new_svg, w, h)
-        if new_pixels:
-            new_fitness, new_sim, new_mse, new_regions = compute_fitness(
-                new_pixels, target, w, h, new_genome.shape_count(),
-            )
-        else:
-            new_fitness, new_sim, new_mse, new_regions = 0.0, 0.0, 255**2, [1.0]*4
+        new_fitness, new_sim, new_mse, new_regions = _eval_genome(
+            new_genome, target, w, h, gpu_rast, target_gpu,
+        )
 
         reward = new_fitness - fitness
 
@@ -683,6 +697,7 @@ if __name__ == "__main__":
     target_arg = os.environ.get("EVOL_TARGET", "glow")
     n_steps = int(os.environ.get("BO_STEPS", "200"))
     bo_trials = int(os.environ.get("BO_TRIALS", "30"))
+    use_gpu = os.environ.get("BO_GPU", "0") == "1"
 
     if target_arg == "all":
         targets = ["glow", "blocks", "face", "sunset", "rings"]
@@ -690,4 +705,4 @@ if __name__ == "__main__":
         targets = [target_arg]
 
     for t in targets:
-        sweep(t, n_steps=n_steps, bo_trials=bo_trials)
+        sweep(t, n_steps=n_steps, bo_trials=bo_trials, use_gpu=use_gpu)
