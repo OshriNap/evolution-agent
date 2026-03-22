@@ -1,4 +1,4 @@
-"""Tests for image render helpers."""
+"""Tests for SVG image render/save helpers."""
 import os
 import sys
 import tempfile
@@ -8,39 +8,37 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
-def test_render_to_ppm_creates_valid_file():
-    from optimize_image import render_to_ppm, W, H
+def test_save_svg_creates_file():
+    from optimize_image import save_svg
 
-    def red(x, y, w, h, p=None):
-        return (255, 0, 0)
+    def simple(w, h, p=None):
+        return f'<svg width="{w}" height="{h}"><rect width="{w}" height="{h}" fill="red"/></svg>'
 
-    with tempfile.NamedTemporaryFile(suffix=".ppm", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
         path = f.name
 
     try:
-        render_to_ppm(red, path)
+        save_svg(simple, path)
         assert os.path.exists(path)
-        with open(path, "rb") as f:
-            header = f.readline()
-            assert header.strip() == b"P6"
-            dims = f.readline()
-            assert dims.strip() == f"{W} {H}".encode()
-        assert os.path.getsize(path) > W * H * 3
+        with open(path) as f:
+            content = f.read()
+        assert "<svg" in content
     finally:
         os.unlink(path)
 
 
-def test_render_to_png_creates_valid_file():
-    from optimize_image import render_to_png, W, H
+def test_save_png_creates_valid_file():
+    from optimize_image import save_png
 
-    def blue(x, y, w, h, p=None):
-        return (0, 0, 255)
+    def blue(w, h, p=None):
+        return (f'<svg width="{w}" height="{h}" xmlns="http://www.w3.org/2000/svg">'
+                f'<rect width="{w}" height="{h}" fill="blue"/></svg>')
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         path = f.name
 
     try:
-        render_to_png(blue, path)
+        save_png(blue, path)
         assert os.path.exists(path)
         with open(path, "rb") as f:
             sig = f.read(8)
@@ -49,20 +47,22 @@ def test_render_to_png_creates_valid_file():
         os.unlink(path)
 
 
-def test_render_with_params():
-    from optimize_image import render_to_ppm
+def test_save_with_params():
+    from optimize_image import save_svg
 
-    def parameterized(x, y, w, h, p=None):
+    def parameterized(w, h, p=None):
         if p is None:
-            p = {"v": 128}
-        v = int(p["v"])
-        return (v, v, v)
+            p = {"r": 128}
+        v = int(p["r"])
+        return f'<svg width="{w}" height="{h}"><rect width="{w}" height="{h}" fill="rgb({v},0,0)"/></svg>'
 
-    with tempfile.NamedTemporaryFile(suffix=".ppm", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
         path = f.name
 
     try:
-        render_to_ppm(parameterized, path, p={"v": 200})
+        save_svg(parameterized, path, p={"r": 200})
         assert os.path.exists(path)
+        with open(path) as f:
+            assert "200" in f.read()
     finally:
         os.unlink(path)
